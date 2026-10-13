@@ -5,9 +5,10 @@ Python-first local RPG prototype. Current design and combat notes are provisiona
 Requires Python 3.11+.
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
+source .venv/bin/activate  # Windows: .venv\\Scripts\\Activate.ps1
 python -m pip install -e ".[dev]"
 pytest
 ```
 
-Read `AGENTS.md` and `docs/AGENT_PROTOCOL.md` before contributing. The human Game Director approves major design decisions.
+## Project workflow
+Read `AGENTS.md`, `docs/AGENT_PROTOCOL.md`, and `docs/WORKFLOW.md` before contributing. The human Game Director approves major design decisions. Work should be scoped, reviewed, and accepted before merging to `main`.
