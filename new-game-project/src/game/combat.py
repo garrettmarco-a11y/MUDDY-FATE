@@ -11,10 +11,13 @@ Enemy defense is fixed at ``ENEMY_DEFENSE = 0`` for this encounter, so the
 effective rule is ``max(1, puissant)``. Only Puissant (Strength) participates
 in combat resolution; no other trait has a combat function yet.
 
+``AttackResult.damage`` is the health actually removed, so an overkill hit
+reports only the enemy's remaining health.
+
 Error behavior:
 
-- Invalid construction values (wrong type, out of range) raise ``TypeError`` or
-  ``ValueError``.
+- Invalid construction values or ``calculate_damage`` arguments (wrong type,
+  out of range) raise ``TypeError`` or ``ValueError``.
 - Unsupported actions, starting an encounter against an already defeated
   enemy, and attacking a defeated enemy raise ``CombatError``. A rejected
   action never changes encounter state.
@@ -73,6 +76,7 @@ class Enemy:
 
 @dataclass(frozen=True)
 class AttackResult:
+    # Health actually removed; less than the calculated damage on overkill.
     damage: int
     health_before: int
     health_after: int
@@ -80,7 +84,11 @@ class AttackResult:
 
 
 def calculate_damage(puissant: int) -> int:
-    """PROVISIONAL damage rule: ``max(1, puissant - ENEMY_DEFENSE)``."""
+    """PROVISIONAL damage rule: ``max(1, puissant - ENEMY_DEFENSE)``.
+
+    Validates ``puissant`` with the same rules as ``Player``.
+    """
+    _require_int("puissant", puissant, minimum=0)
     return max(1, puissant - ENEMY_DEFENSE)
 
 
@@ -105,11 +113,11 @@ class Encounter:
     def _attack(self) -> AttackResult:
         if self.enemy.defeated:
             raise CombatError("enemy is already defeated")
-        damage = calculate_damage(self.player.puissant)
         before = self.enemy.health
-        self.enemy = replace(self.enemy, health=max(0, before - damage))
+        after = max(0, before - calculate_damage(self.player.puissant))
+        self.enemy = replace(self.enemy, health=after)
         return AttackResult(
-            damage=damage,
+            damage=before - after,
             health_before=before,
             health_after=self.enemy.health,
             defeated=self.enemy.defeated,

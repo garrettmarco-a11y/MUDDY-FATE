@@ -33,6 +33,18 @@ def test_minimum_damage_is_one():
     assert calculate_damage(0) == 1
 
 
+@pytest.mark.parametrize("value", [-1, -3])
+def test_calculate_damage_rejects_negative_puissant(value):
+    with pytest.raises(ValueError):
+        calculate_damage(value)
+
+
+@pytest.mark.parametrize("value", [3.5, "3", None, True])
+def test_calculate_damage_rejects_non_int_puissant(value):
+    with pytest.raises(TypeError):
+        calculate_damage(value)
+
+
 def test_zero_puissant_attack_still_deals_one_damage():
     encounter = Encounter(Player(puissant=0), Enemy(health=3))
 
@@ -70,7 +82,8 @@ def test_overkill_clamps_health_at_zero():
 
     result = encounter.perform(Action.ATTACK)
 
-    assert result.damage == 9
+    # Reports health actually removed, not the calculated 9.
+    assert result.damage == 3
     assert result.health_after == 0
     assert encounter.enemy.health == 0
     assert result.defeated
