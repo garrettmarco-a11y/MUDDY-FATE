@@ -31,5 +31,12 @@ Notes:
 - If `python3 --version` / `py -3 --version` shows something older than 3.11, name a specific interpreter, e.g. `python3.11 -m venv .venv` or `py -3.11 -m venv .venv`.
 - The smoke tests in `tests/test_smoke.py` check the environment itself; a failure there means setup is incomplete, and the message says what to fix.
 
+## Play the combat prototype
+With the virtual environment active, from `new-game-project/`:
+```bash
+python -m game.sim
+```
+Enter `a` to attack on your turn; the enemy attacks automatically on its turn. After each encounter, answer `y` to fight again or `n` to quit. Enter `q` at any prompt to quit. Combat rules and starting stats are PROVISIONAL prototype values, not approved balance.
+
 ## Project workflow
 Read `AGENTS.md`, `docs/AGENT_PROTOCOL.md`, and `docs/WORKFLOW.md` before contributing. The human Game Director approves major design decisions. Work should be scoped, reviewed, and accepted before merging to `main`.
