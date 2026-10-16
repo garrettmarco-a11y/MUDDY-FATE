@@ -15,7 +15,15 @@ from __future__ import annotations
 from dataclasses import fields
 from typing import Callable
 
-from game.combat import Action, AttackResult, Character, Encounter, Side, Traits
+from game.combat import (
+    Action,
+    AttackResult,
+    Character,
+    DefendResult,
+    Encounter,
+    Side,
+    Traits,
+)
 
 Read = Callable[[str], str]
 Write = Callable[[str], None]
@@ -48,15 +56,18 @@ def describe_character(side: Side, character: Character) -> str:
     return f"{NAMES[side]:<6} HP {character.health:>3} | {traits}"
 
 
-def describe_attack(result: AttackResult, encounter: Encounter) -> str:
+def describe_result(result: AttackResult | DefendResult, encounter: Encounter) -> str:
+    if isinstance(result, DefendResult):
+        return f"{NAMES[result.actor]} defends and will block the next attack."
     target = Side.ENEMY if result.attacker is Side.PLAYER else Side.PLAYER
-    return (
-        f"{NAMES[result.attacker]} attacks {NAMES[target]} for {result.damage} damage. "
-        f"Player HP {encounter.player.health} | Enemy HP {encounter.enemy.health}"
-    )
+    if result.blocked:
+        hit = f"{NAMES[result.attacker]} attacks {NAMES[target]}, but the attack is blocked!"
+    else:
+        hit = f"{NAMES[result.attacker]} attacks {NAMES[target]} for {result.damage} damage."
+    return f"{hit} Player HP {encounter.player.health} | Enemy HP {encounter.enemy.health}"
 
 
-def _ask(read: Read, write: Write, prompt: str, choices: dict[str, str]) -> str | None:
+def _ask(read: Read, write: Write, prompt: str, choices: dict[str, object]) -> object | None:
     """Prompt until the answer is one of ``choices``; ``None`` on end of input."""
     while True:
         try:
@@ -68,7 +79,14 @@ def _ask(read: Read, write: Write, prompt: str, choices: dict[str, str]) -> str 
         write(f"Unrecognized choice {answer!r}. Options: {', '.join(sorted(set(choices)))}.")
 
 
-TURN_CHOICES = {"a": "attack", "attack": "attack", "q": "quit", "quit": "quit"}
+TURN_CHOICES = {
+    "a": Action.ATTACK,
+    "attack": Action.ATTACK,
+    "d": Action.DEFEND,
+    "defend": Action.DEFEND,
+    "q": "quit",
+    "quit": "quit",
+}
 AGAIN_CHOICES = {"y": "yes", "yes": "yes", "n": "no", "no": "no", "q": "no", "quit": "no"}
 
 
@@ -80,11 +98,13 @@ def play_encounter(read: Read, write: Write, encounter: Encounter) -> str | None
     while not encounter.finished:
         side = encounter.current_turn
         write(f"-- {NAMES[side]}'s turn --")
+        action = Action.ATTACK  # the enemy always attacks
         if side is Side.PLAYER:
-            if _ask(read, write, "[a]ttack or [q]uit > ", TURN_CHOICES) != "attack":
+            action = _ask(read, write, "[a]ttack, [d]efend or [q]uit > ", TURN_CHOICES)
+            if not isinstance(action, Action):
                 return None
-        result = encounter.perform(side, Action.ATTACK)
-        write(describe_attack(result, encounter))
+        result = encounter.perform(side, action)
+        write(describe_result(result, encounter))
 
     outcome = LOST if encounter.player.defeated else WON
     write("Victory! The enemy is defeated." if outcome == WON else "Defeat. You have fallen.")

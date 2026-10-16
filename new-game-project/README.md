@@ -36,7 +36,7 @@ With the virtual environment active, from `new-game-project/`:
 ```bash
 python -m game.sim
 ```
-Enter `a` to attack on your turn; the enemy attacks automatically on its turn. After each encounter, answer `y` to fight again or `n` to quit. Enter `q` at any prompt to quit. Combat rules and starting stats are PROVISIONAL prototype values, not approved balance.
+On your turn, enter `a` to attack or `d` to defend. Defending blocks the next attack against you completely (0 damage), then the block is used up; it does not stack. The enemy attacks automatically on its turn. After each encounter, answer `y` to fight again or `n` to quit. Enter `q` at any prompt to quit. Combat rules and starting stats are PROVISIONAL prototype values, not approved balance.
 
 ## Project workflow
 Read `AGENTS.md`, `docs/AGENT_PROTOCOL.md`, and `docs/WORKFLOW.md` before contributing. The human Game Director approves major design decisions. Work should be scoped, reviewed, and accepted before merging to `main`.
