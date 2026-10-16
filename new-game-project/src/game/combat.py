@@ -1,4 +1,4 @@
-"""Turn-based combat: one player and one enemy, alternating basic attacks.
+"""Turn-based combat: one player and one enemy, alternating attacks or defends.
 
 Status: PROVISIONAL. This is a minimal, deterministic starting point, not the
 final combat system or balance.
@@ -22,6 +22,16 @@ reduces either character to zero health the encounter is finished and
 
 ``AttackResult.damage`` is the health actually removed, so an overkill hit
 reports only the target's remaining health.
+
+Defend rule (PROVISIONAL, approved for this prototype only):
+
+- ``Action.DEFEND`` uses the actor's turn and sets ``Character.defending``.
+- The next attack against a defending character is blocked completely: it
+  applies 0 damage, even if it would have been lethal, and
+  ``AttackResult.blocked`` is ``True``. That attack consumes the block.
+- Blocks do not stack; defending while already defending leaves one block.
+- The block belongs to the defended character, not to a particular attacker,
+  and stays until an attack consumes it or the encounter ends.
 
 Error behavior:
 
@@ -60,6 +70,7 @@ class CombatError(Exception):
 
 class Action(Enum):
     ATTACK = "attack"
+    DEFEND = "defend"
 
 
 class Side(Enum):
@@ -97,11 +108,15 @@ class Character:
 
     traits: Traits
     health: int
+    # PROVISIONAL: one-use block against the next incoming attack.
+    defending: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.traits, Traits):
             raise TypeError("traits must be a Traits")
         _require_int("health", self.health, minimum=0)
+        if not isinstance(self.defending, bool):
+            raise TypeError("defending must be a bool")
 
     @property
     def defeated(self) -> bool:
@@ -116,6 +131,12 @@ class AttackResult:
     health_before: int  # target's
     health_after: int  # target's
     defeated: bool  # whether the target is now defeated
+    blocked: bool = False  # the target's defend absorbed this attack
+
+
+@dataclass(frozen=True)
+class DefendResult:
+    actor: Side
 
 
 def calculate_damage(puissant: int) -> int:
@@ -130,7 +151,7 @@ def calculate_damage(puissant: int) -> int:
 class Encounter:
     """A single player versus a single enemy, taking turns.
 
-    The player acts first. The caller requests each attack explicitly for the
+    The player acts first. The caller requests each action explicitly for the
     side whose turn it is; the encounter only enforces the order.
     """
 
@@ -154,19 +175,29 @@ class Encounter:
         """The side that acts next, or ``None`` once the encounter is finished."""
         return None if self.finished else self._turn
 
-    def perform(self, actor: Side, action: Action) -> AttackResult:
+    def perform(self, actor: Side, action: Action) -> AttackResult | DefendResult:
         if not isinstance(actor, Side):
             raise CombatError(f"unsupported side: {actor!r}")
-        if action is not Action.ATTACK:
+        if not isinstance(action, Action):
             raise CombatError(f"unsupported action: {action!r}")
         if self.finished:
             raise CombatError("encounter is finished")
         if actor is not self._turn:
             raise CombatError(f"not {actor.value}'s turn; {self._turn.value} acts next")
-        result = self._attack(actor)
+        if action is Action.DEFEND:
+            result = self._defend(actor)
+        else:
+            result = self._attack(actor)
         if not self.finished:
             self._turn = Side.ENEMY if actor is Side.PLAYER else Side.PLAYER
         return result
+
+    def _defend(self, actor: Side) -> DefendResult:
+        if actor is Side.PLAYER:
+            self.player = replace(self.player, defending=True)
+        else:
+            self.enemy = replace(self.enemy, defending=True)
+        return DefendResult(actor=actor)
 
     def _attack(self, actor: Side) -> AttackResult:
         if actor is Side.PLAYER:
@@ -175,8 +206,12 @@ class Encounter:
             attacker, target = self.enemy, self.player
 
         before = target.health
-        after = max(0, before - calculate_damage(attacker.traits.puissant))
-        target = replace(target, health=after)
+        blocked = target.defending
+        if blocked:
+            after = before
+        else:
+            after = max(0, before - calculate_damage(attacker.traits.puissant))
+        target = replace(target, health=after, defending=False)
         if actor is Side.PLAYER:
             self.enemy = target
         else:
@@ -187,4 +222,5 @@ class Encounter:
             health_before=before,
             health_after=after,
             defeated=target.defeated,
+            blocked=blocked,
         )

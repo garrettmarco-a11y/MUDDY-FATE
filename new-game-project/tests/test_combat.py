@@ -7,6 +7,7 @@ from game.combat import (
     AttackResult,
     Character,
     CombatError,
+    DefendResult,
     Encounter,
     Side,
     Traits,
@@ -311,14 +312,187 @@ def test_full_exchange_to_enemy_victory():
     assert enc.current_turn is None
 
 
+# --- defend (PROVISIONAL) ------------------------------------------------
+
+
+def test_defend_is_accepted_and_uses_the_turn():
+    enc = encounter()
+
+    result = enc.perform(Side.PLAYER, Action.DEFEND)
+
+    assert result == DefendResult(actor=Side.PLAYER)
+    assert enc.player.defending
+    assert enc.current_turn is Side.ENEMY
+    assert (enc.player.health, enc.enemy.health) == (10, 10)
+
+
+@pytest.mark.parametrize("defender", [Side.PLAYER, Side.ENEMY])
+def test_defended_character_takes_zero_damage_from_next_attack(defender):
+    enc = encounter(player_puissant=4, enemy_puissant=4)
+    take_turn_to(enc, defender)  # player hits enemy for 4 first if needed
+    enc.perform(defender, Action.DEFEND)
+    attacker = Side.ENEMY if defender is Side.PLAYER else Side.PLAYER
+    target = (lambda: enc.player) if defender is Side.PLAYER else (lambda: enc.enemy)
+    before = target().health
+
+    result = enc.perform(attacker, Action.ATTACK)
+
+    assert result.blocked
+    assert result.damage == 0
+    assert result.health_before == result.health_after == before
+    assert not result.defeated
+    assert target().health == before
+
+
+def test_block_is_consumed_and_next_attack_deals_damage():
+    enc = encounter(player_puissant=1, enemy_puissant=3)
+    enc.perform(Side.PLAYER, Action.DEFEND)
+    enc.perform(Side.ENEMY, Action.ATTACK)  # blocked
+
+    assert not enc.player.defending
+    enc.perform(Side.PLAYER, Action.ATTACK)
+    result = enc.perform(Side.ENEMY, Action.ATTACK)
+
+    assert not result.blocked
+    assert result.damage == 3
+    assert enc.player.health == 7
+
+
+def test_defend_does_not_stack():
+    enc = encounter(player_puissant=1, enemy_puissant=3)
+    enc.perform(Side.PLAYER, Action.DEFEND)
+    enc.perform(Side.ENEMY, Action.DEFEND)  # enemy passes its turn defending
+    enc.perform(Side.PLAYER, Action.DEFEND)  # still a single block
+
+    assert enc.player.defending is True
+    first = enc.perform(Side.ENEMY, Action.ATTACK)
+    enc.perform(Side.PLAYER, Action.ATTACK)  # blocked by the enemy's defend
+    second = enc.perform(Side.ENEMY, Action.ATTACK)
+
+    assert first.blocked and first.damage == 0
+    assert not second.blocked and second.damage == 3
+    assert enc.player.health == 7
+
+
+def test_block_prevents_otherwise_lethal_attack():
+    enc = encounter(player_puissant=1, player_health=3, enemy_puissant=9, enemy_health=10)
+    enc.perform(Side.PLAYER, Action.DEFEND)
+
+    result = enc.perform(Side.ENEMY, Action.ATTACK)
+
+    assert result.blocked
+    assert result.health_after == 3
+    assert not enc.player.defeated
+    assert not enc.finished
+    assert enc.current_turn is Side.PLAYER
+    assert not enc.player.defending
+
+
+def test_block_is_owned_by_defender_not_attacker():
+    # The player's block absorbs the enemy's attack; the enemy, who never
+    # defended, still takes the player's hits.
+    enc = encounter(player_puissant=2, enemy_puissant=2)
+    enc.perform(Side.PLAYER, Action.DEFEND)
+    blocked = enc.perform(Side.ENEMY, Action.ATTACK)
+    hit = enc.perform(Side.PLAYER, Action.ATTACK)
+
+    assert blocked.blocked
+    assert not hit.blocked and hit.damage == 2
+    assert not enc.enemy.defending
+
+
+def test_block_survives_own_attack_until_an_incoming_attack_uses_it():
+    enc = encounter(player_puissant=2, enemy_puissant=3)
+    enc.perform(Side.PLAYER, Action.DEFEND)
+    enc.perform(Side.ENEMY, Action.DEFEND)
+    enc.perform(Side.PLAYER, Action.ATTACK)  # blocked by enemy; player keeps block
+
+    assert enc.player.defending
+    assert enc.perform(Side.ENEMY, Action.ATTACK).blocked
+
+
+def test_unused_block_does_not_stop_encounter_from_ending():
+    # In alternating 1v1 play a block is always used before the next lethal
+    # hit, so build the state directly: the winner holds an unused block.
+    player = Character(traits(puissant=5), health=10, defending=True)
+    enc = Encounter(player, character(health=5))
+
+    result = enc.perform(Side.PLAYER, Action.ATTACK)
+
+    assert result.defeated
+    assert enc.finished
+    assert enc.current_turn is None
+    assert enc.player.defending  # unused; no further effect
+    for side in Side:
+        for action in Action:
+            with pytest.raises(CombatError, match="encounter is finished"):
+                enc.perform(side, action)
+
+
+def test_enemy_defend_blocks_player_attack():
+    enc = encounter(player_puissant=4, enemy_health=10)
+    enc.perform(Side.PLAYER, Action.ATTACK)  # enemy 10 -> 6
+    enc.perform(Side.ENEMY, Action.DEFEND)
+
+    result = enc.perform(Side.PLAYER, Action.ATTACK)
+
+    assert result.blocked and result.damage == 0
+    assert enc.enemy.health == 6
+    assert not enc.enemy.defending
+
+
+@pytest.mark.parametrize("turn, intruder", [(Side.PLAYER, Side.ENEMY), (Side.ENEMY, Side.PLAYER)])
+def test_out_of_turn_defend_is_rejected_without_change(turn, intruder):
+    enc = encounter(player_puissant=2)
+    take_turn_to(enc, turn)
+    state = (enc.player, enc.enemy)
+
+    with pytest.raises(CombatError, match=f"not {intruder.value}'s turn"):
+        enc.perform(intruder, Action.DEFEND)
+
+    assert (enc.player, enc.enemy) == state
+    assert not enc.player.defending and not enc.enemy.defending
+    assert enc.current_turn is turn
+
+
+def test_defend_after_encounter_finished_is_rejected():
+    enc = encounter(player_puissant=10, enemy_health=5)
+    enc.perform(Side.PLAYER, Action.ATTACK)
+
+    for side in Side:
+        with pytest.raises(CombatError, match="encounter is finished"):
+            enc.perform(side, Action.DEFEND)
+    assert not enc.player.defending and not enc.enemy.defending
+
+
+def test_characters_start_not_defending_and_flag_is_validated():
+    assert character().defending is False
+    with pytest.raises(TypeError):
+        Character(traits(), health=1, defending=1)
+
+
+def test_attack_only_results_report_not_blocked():
+    enc = encounter(player_puissant=3, enemy_puissant=2)
+
+    results = [enc.perform(enc.current_turn, Action.ATTACK) for _ in range(4)]
+
+    assert not any(r.blocked for r in results)
+
+
 # --- determinism ---------------------------------------------------------
 
 
 def test_equivalent_encounters_produce_identical_results():
     def run():
         enc = encounter(player_puissant=4, player_health=9, enemy_puissant=3, enemy_health=10)
-        sides = [Side.PLAYER, Side.ENEMY, Side.PLAYER, Side.ENEMY]
-        return [enc.perform(side, Action.ATTACK) for side in sides]
+        plan = [
+            (Side.PLAYER, Action.ATTACK),
+            (Side.ENEMY, Action.ATTACK),
+            (Side.PLAYER, Action.DEFEND),
+            (Side.ENEMY, Action.ATTACK),
+            (Side.PLAYER, Action.ATTACK),
+        ]
+        return [enc.perform(side, action) for side, action in plan] + [enc.player, enc.enemy]
 
     assert run() == run()
 

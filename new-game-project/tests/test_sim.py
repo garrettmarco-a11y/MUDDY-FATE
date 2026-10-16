@@ -69,7 +69,7 @@ def test_player_attack_is_followed_by_automatic_enemy_attack():
         "Enemy attacks Player for 2 damage. Player HP 10 | Enemy HP 7",
     ]
     # The player was prompted only on their own turns.
-    assert s.prompts == ["[a]ttack or [q]uit > "] * 2
+    assert s.prompts == ["[a]ttack, [d]efend or [q]uit > "] * 2
 
 
 def test_victory_is_reported_and_no_extra_attacks_happen():
@@ -171,6 +171,63 @@ def test_end_of_input_quits_cleanly():
 
     assert play(s) == []
     assert s.lines[-1].startswith("Goodbye.")
+
+
+# --- defend (PROVISIONAL) ------------------------------------------------
+
+
+def test_defend_blocks_the_enemy_attack_and_is_reported():
+    s = Script("d", "q")
+
+    play(s)
+
+    assert s.lines_with("defends") == ["Player defends and will block the next attack."]
+    blocked = s.lines_with("blocked")
+    assert blocked == ["Enemy attacks Player, but the attack is blocked! Player HP 12 | Enemy HP 10"]
+    assert "damage" not in blocked[0]
+
+
+def test_block_is_used_up_so_the_following_enemy_attack_hits():
+    s = Script("d", "a", "q")
+
+    play(s)
+
+    assert s.lines_with("Enemy attacks") == [
+        "Enemy attacks Player, but the attack is blocked! Player HP 12 | Enemy HP 10",
+        "Enemy attacks Player for 2 damage. Player HP 10 | Enemy HP 7",
+    ]
+
+
+def test_defend_accepts_word_and_mixed_case():
+    s = Script(" Defend ", "D", "q")
+
+    play(s)
+
+    assert len(s.lines_with("defends")) == 2
+    assert len(s.lines_with("blocked")) == 2
+
+
+def test_defend_prevents_otherwise_lethal_hit_in_sim():
+    # Enemy Puissant 9 would kill a 4 HP player; defending saves them once.
+    s = Script("d", "a", "n")
+
+    outcomes = play(s, player=(1, 4), enemy=(9, 10))
+
+    assert s.lines_with("Enemy attacks") == [
+        "Enemy attacks Player, but the attack is blocked! Player HP 4 | Enemy HP 10",
+        "Enemy attacks Player for 4 damage. Player HP 0 | Enemy HP 9",
+    ]
+    assert outcomes == [LOST]
+
+
+def test_defend_delays_but_does_not_change_outcome_against_always_attacking_enemy():
+    # Documents current PROVISIONAL behavior: a defend turn cancels one full
+    # round (no player hit, enemy hit blocked), so the result is unchanged.
+    attack_only, with_defend = Script("a", "a", "n"), Script("d", "a", "a", "n")
+
+    assert play(attack_only, player=(1, 4), enemy=(2, 10)) == [LOST]
+    assert play(with_defend, player=(1, 4), enemy=(2, 10)) == [LOST]
+    assert len(with_defend.lines_with("attacks")) == len(attack_only.lines_with("attacks")) + 1
 
 
 def test_module_runs_without_interactive_terminal():
