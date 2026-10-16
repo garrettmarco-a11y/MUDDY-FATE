@@ -1,4 +1,4 @@
-"""Basic reciprocal combat: one player and one enemy, each able to attack.
+"""Turn-based combat: one player and one enemy, alternating basic attacks.
 
 Status: PROVISIONAL. This is a minimal, deterministic starting point, not the
 final combat system or balance.
@@ -15,6 +15,11 @@ Defense is fixed at ``DEFENSE = 0``, so the effective rule is
 ``max(1, puissant)``. Only Puissant (Strength) affects combat. The other five
 traits are stored on every character but have no mechanical effect yet.
 
+Turn order: the player acts first, then turns alternate after each attack. The
+caller chooses when each side acts; nothing acts automatically. When an attack
+reduces either character to zero health the encounter is finished and
+``current_turn`` is ``None``: there is no next turn.
+
 ``AttackResult.damage`` is the health actually removed, so an overkill hit
 reports only the target's remaining health.
 
@@ -23,8 +28,9 @@ Error behavior:
 - Invalid construction values or ``calculate_damage`` arguments (wrong type,
   out of range) raise ``TypeError`` or ``ValueError``.
 - Unsupported actions or sides, starting an encounter when either character is
-  already defeated, and attacking when either character is defeated raise
-  ``CombatError``. A rejected action never changes encounter state.
+  already defeated, acting out of turn, and acting after the encounter is
+  finished raise ``CombatError``. A rejected action never changes encounter
+  state, including whose turn it is.
 
 Example::
 
@@ -33,7 +39,9 @@ Example::
     enemy = Character(Traits(puissant=2, alacrity=0, measure=0,
                              aptitude=0, acumen=0, glamour=0), health=5)
     encounter = Encounter(player, enemy)
+    encounter.current_turn                                      # Side.PLAYER
     encounter.perform(Side.PLAYER, Action.ATTACK).health_after  # enemy: 2
+    encounter.current_turn                                      # Side.ENEMY
     encounter.perform(Side.ENEMY, Action.ATTACK).health_after   # player: 8
 """
 
@@ -120,9 +128,10 @@ def calculate_damage(puissant: int) -> int:
 
 
 class Encounter:
-    """A single player versus a single enemy. Either side can attack.
+    """A single player versus a single enemy, taking turns.
 
-    There is no turn order: callers choose which side acts.
+    The player acts first. The caller requests each attack explicitly for the
+    side whose turn it is; the encounter only enforces the order.
     """
 
     def __init__(self, player: Character, enemy: Character) -> None:
@@ -134,23 +143,36 @@ class Encounter:
             raise CombatError("cannot start an encounter with a defeated character")
         self.player = player
         self.enemy = enemy
+        self._turn = Side.PLAYER
+
+    @property
+    def finished(self) -> bool:
+        return self.player.defeated or self.enemy.defeated
+
+    @property
+    def current_turn(self) -> Side | None:
+        """The side that acts next, or ``None`` once the encounter is finished."""
+        return None if self.finished else self._turn
 
     def perform(self, actor: Side, action: Action) -> AttackResult:
         if not isinstance(actor, Side):
             raise CombatError(f"unsupported side: {actor!r}")
         if action is not Action.ATTACK:
             raise CombatError(f"unsupported action: {action!r}")
-        return self._attack(actor)
+        if self.finished:
+            raise CombatError("encounter is finished")
+        if actor is not self._turn:
+            raise CombatError(f"not {actor.value}'s turn; {self._turn.value} acts next")
+        result = self._attack(actor)
+        if not self.finished:
+            self._turn = Side.ENEMY if actor is Side.PLAYER else Side.PLAYER
+        return result
 
     def _attack(self, actor: Side) -> AttackResult:
         if actor is Side.PLAYER:
             attacker, target = self.player, self.enemy
         else:
             attacker, target = self.enemy, self.player
-        if attacker.defeated:
-            raise CombatError(f"{actor.value} is defeated and cannot attack")
-        if target.defeated:
-            raise CombatError("target is already defeated")
 
         before = target.health
         after = max(0, before - calculate_damage(attacker.traits.puissant))

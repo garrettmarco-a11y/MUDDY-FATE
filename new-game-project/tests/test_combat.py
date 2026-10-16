@@ -34,11 +34,20 @@ def encounter(player_puissant=0, player_health=10, enemy_puissant=0, enemy_healt
     )
 
 
+def take_turn_to(enc, side):
+    # The player always acts first; reach the enemy's turn with one player hit.
+    if side is Side.ENEMY:
+        enc.perform(Side.PLAYER, Action.ATTACK)
+    assert enc.current_turn is side
+
+
 def test_example_encounter():
     # Minimal usage: create an encounter, attack both ways, inspect results.
     enc = encounter(player_puissant=3, player_health=10, enemy_puissant=2, enemy_health=5)
 
+    assert enc.current_turn is Side.PLAYER
     player_hit = enc.perform(Side.PLAYER, Action.ATTACK)
+    assert enc.current_turn is Side.ENEMY
     enemy_hit = enc.perform(Side.ENEMY, Action.ATTACK)
 
     assert player_hit == AttackResult(
@@ -48,6 +57,8 @@ def test_example_encounter():
         attacker=Side.ENEMY, damage=2, health_before=10, health_after=8, defeated=False
     )
     assert (enc.player.health, enc.enemy.health) == (8, 2)
+    assert enc.current_turn is Side.PLAYER
+    assert not enc.finished
 
 
 # --- shared trait model --------------------------------------------------
@@ -116,6 +127,7 @@ def test_calculate_damage_rejects_non_int_puissant(value):
 @pytest.mark.parametrize("side", [Side.PLAYER, Side.ENEMY])
 def test_zero_puissant_attack_still_deals_one_damage(side):
     enc = encounter(player_health=3, enemy_health=3)
+    take_turn_to(enc, side)
 
     result = enc.perform(side, Action.ATTACK)
 
@@ -139,34 +151,41 @@ def test_player_attack_reduces_enemy_health_only():
 
 def test_enemy_attack_reduces_player_health_only():
     enc = encounter(player_health=10, enemy_puissant=4, enemy_health=10)
+    take_turn_to(enc, Side.ENEMY)  # player (Puissant 0) deals 1: enemy 10 -> 9
 
     result = enc.perform(Side.ENEMY, Action.ATTACK)
 
     assert result.attacker is Side.ENEMY
     assert (result.health_before, result.health_after) == (10, 6)
     assert not result.defeated
-    assert (enc.player.health, enc.enemy.health) == (6, 10)
+    assert (enc.player.health, enc.enemy.health) == (6, 9)
 
 
 @pytest.mark.parametrize("side", [Side.PLAYER, Side.ENEMY])
 def test_lethal_attack_reaches_exactly_zero(side):
-    enc = encounter(player_puissant=5, player_health=5, enemy_puissant=5, enemy_health=5)
+    player_puissant = 5 if side is Side.PLAYER else 0
+    enc = encounter(player_puissant, player_health=5, enemy_puissant=5, enemy_health=5)
+    take_turn_to(enc, side)
 
     result = enc.perform(side, Action.ATTACK)
 
     assert result.damage == 5
     assert result.health_after == 0
     assert result.defeated
+    assert enc.finished
 
 
 @pytest.mark.parametrize("side", [Side.PLAYER, Side.ENEMY])
 def test_overkill_clamps_health_and_reports_applied_damage(side):
-    enc = encounter(player_puissant=9, player_health=3, enemy_puissant=9, enemy_health=3)
+    player_puissant = 9 if side is Side.PLAYER else 0
+    enc = encounter(player_puissant, player_health=3, enemy_puissant=9, enemy_health=4)
+    take_turn_to(enc, side)
 
     result = enc.perform(side, Action.ATTACK)
 
     # Reports health actually removed, not the calculated 9.
-    assert result.damage == 3
+    expected = 4 if side is Side.PLAYER else 3
+    assert result.damage == expected
     assert result.health_after == 0
     target = enc.enemy if side is Side.PLAYER else enc.player
     assert target.health == 0
@@ -192,23 +211,104 @@ def test_alternating_attacks_until_defeat():
     assert not enc.player.defeated
 
 
-# --- after defeat --------------------------------------------------------
+# --- turn order --------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "winner, loser", [(Side.PLAYER, Side.ENEMY), (Side.ENEMY, Side.PLAYER)]
-)
-def test_no_attacks_after_either_side_is_defeated(winner, loser):
-    enc = encounter(player_puissant=5, player_health=5, enemy_puissant=5, enemy_health=5)
+def test_new_encounter_starts_on_player_turn():
+    enc = encounter()
+
+    assert enc.current_turn is Side.PLAYER
+    assert not enc.finished
+
+
+def test_turns_alternate_after_each_nonlethal_attack():
+    enc = encounter(player_puissant=1, enemy_puissant=1)
+
+    turns = [enc.current_turn]
+    for _ in range(4):
+        enc.perform(enc.current_turn, Action.ATTACK)
+        turns.append(enc.current_turn)
+
+    assert turns == [Side.PLAYER, Side.ENEMY, Side.PLAYER, Side.ENEMY, Side.PLAYER]
+
+
+@pytest.mark.parametrize("turn, intruder", [(Side.PLAYER, Side.ENEMY), (Side.ENEMY, Side.PLAYER)])
+def test_out_of_turn_attack_is_rejected_without_change(turn, intruder):
+    enc = encounter(player_puissant=2, enemy_puissant=2)
+    take_turn_to(enc, turn)
+    state = (enc.player, enc.enemy)
+
+    with pytest.raises(CombatError, match=f"not {intruder.value}'s turn"):
+        enc.perform(intruder, Action.ATTACK)
+
+    assert (enc.player, enc.enemy) == state
+    assert enc.current_turn is turn
+    assert not enc.finished
+
+
+@pytest.mark.parametrize("bad_actor", ["player", None])
+def test_rejected_input_does_not_advance_turn(bad_actor):
+    enc = encounter(player_puissant=2)
+
+    with pytest.raises(CombatError):
+        enc.perform(bad_actor, Action.ATTACK)
+    with pytest.raises(CombatError):
+        enc.perform(Side.PLAYER, "attack")
+
+    assert enc.current_turn is Side.PLAYER
+
+
+# --- encounter end -------------------------------------------------------
+
+
+@pytest.mark.parametrize("winner, loser", [(Side.PLAYER, Side.ENEMY), (Side.ENEMY, Side.PLAYER)])
+def test_lethal_attack_finishes_encounter_with_no_next_turn(winner, loser):
+    player_puissant = 5 if winner is Side.PLAYER else 0
+    enc = encounter(player_puissant, player_health=5, enemy_puissant=5, enemy_health=5)
+    take_turn_to(enc, winner)
+
+    enc.perform(winner, Action.ATTACK)
+
+    assert enc.finished
+    assert enc.current_turn is None
+    defeated = enc.enemy if loser is Side.ENEMY else enc.player
+    assert defeated.defeated
+
+
+@pytest.mark.parametrize("winner, loser", [(Side.PLAYER, Side.ENEMY), (Side.ENEMY, Side.PLAYER)])
+def test_no_action_after_encounter_is_finished(winner, loser):
+    player_puissant = 5 if winner is Side.PLAYER else 0
+    enc = encounter(player_puissant, player_health=5, enemy_puissant=5, enemy_health=5)
+    take_turn_to(enc, winner)
     enc.perform(winner, Action.ATTACK)
     state = (enc.player, enc.enemy)
 
-    with pytest.raises(CombatError, match="already defeated"):
-        enc.perform(winner, Action.ATTACK)
-    with pytest.raises(CombatError, match="cannot attack"):
-        enc.perform(loser, Action.ATTACK)
+    for side in (winner, loser):
+        with pytest.raises(CombatError, match="encounter is finished"):
+            enc.perform(side, Action.ATTACK)
 
     assert (enc.player, enc.enemy) == state
+    assert enc.finished
+    assert enc.current_turn is None
+
+
+def test_full_exchange_to_enemy_victory():
+    enc = encounter(player_puissant=1, player_health=4, enemy_puissant=2, enemy_health=10)
+
+    log = []
+    while not enc.finished:
+        side = enc.current_turn
+        result = enc.perform(side, Action.ATTACK)
+        log.append((side, result.health_after))
+
+    assert log == [
+        (Side.PLAYER, 9),
+        (Side.ENEMY, 2),
+        (Side.PLAYER, 8),
+        (Side.ENEMY, 0),
+    ]
+    assert enc.player.defeated
+    assert enc.current_turn is None
 
 
 # --- determinism ---------------------------------------------------------
