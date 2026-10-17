@@ -2,7 +2,8 @@
 
 Run from ``new-game-project/``::
 
-    python -m game.sim
+    python -m game.sim           # baseline rules
+    python -m game.sim --heavy   # EXPERIMENTAL telegraphed heavy attack
 
 This module only handles presentation and input. Every combat rule (damage,
 turn order, defeat, encounter end) comes from ``game.combat``. Input and
@@ -12,6 +13,7 @@ can drive the simulation without a terminal.
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import fields
 from typing import Callable
 
@@ -23,6 +25,7 @@ from game.combat import (
     Encounter,
     Side,
     Traits,
+    WindUpResult,
 )
 
 Read = Callable[[str], str]
@@ -38,6 +41,10 @@ ENEMY_HEALTH = 10
 NAMES = {Side.PLAYER: "Player", Side.ENEMY: "Enemy"}
 
 WON, LOST = "won", "lost"
+
+# EXPERIMENTAL: with --heavy, the enemy follows a fixed, repeating script of
+# attack, wind up, heavy attack. No randomness and no decision-making.
+HEAVY_CYCLE = 3
 
 
 def default_player() -> Character:
@@ -56,14 +63,22 @@ def describe_character(side: Side, character: Character) -> str:
     return f"{NAMES[side]:<6} HP {character.health:>3} | {traits}"
 
 
-def describe_result(result: AttackResult | DefendResult, encounter: Encounter) -> str:
+def describe_result(
+    result: AttackResult | DefendResult | WindUpResult, encounter: Encounter
+) -> str:
     if isinstance(result, DefendResult):
         return f"{NAMES[result.actor]} defends and will block the next attack."
+    if isinstance(result, WindUpResult):
+        return (
+            f"!! {NAMES[result.actor]} is winding up a HEAVY ATTACK. It strikes on its "
+            f"next turn for {result.damage} damage unless you defend."
+        )
     target = Side.ENEMY if result.attacker is Side.PLAYER else Side.PLAYER
+    verb = "unleashes a HEAVY ATTACK on" if result.heavy else "attacks"
     if result.blocked:
-        hit = f"{NAMES[result.attacker]} attacks {NAMES[target]}, but the attack is blocked!"
+        hit = f"{NAMES[result.attacker]} {verb} {NAMES[target]}, but the attack is blocked!"
     else:
-        hit = f"{NAMES[result.attacker]} attacks {NAMES[target]} for {result.damage} damage."
+        hit = f"{NAMES[result.attacker]} {verb} {NAMES[target]} for {result.damage} damage."
     return f"{hit} Player HP {encounter.player.health} | Enemy HP {encounter.enemy.health}"
 
 
@@ -90,16 +105,31 @@ TURN_CHOICES = {
 AGAIN_CHOICES = {"y": "yes", "yes": "yes", "n": "no", "no": "no", "q": "no", "quit": "no"}
 
 
-def play_encounter(read: Read, write: Write, encounter: Encounter) -> str | None:
+def enemy_action(enemy_turn: int, encounter: Encounter, heavy: bool) -> Action:
+    """The enemy's scripted action for its ``enemy_turn``-th turn (1-based)."""
+    if encounter.enemy.winding_up:
+        return Action.ATTACK  # the announced heavy attack
+    if heavy and enemy_turn % HEAVY_CYCLE == 2:
+        return Action.WIND_UP
+    return Action.ATTACK
+
+
+def play_encounter(
+    read: Read, write: Write, encounter: Encounter, heavy: bool = False
+) -> str | None:
     """Play one encounter. Returns ``WON``, ``LOST``, or ``None`` if the player quit."""
     write(describe_character(Side.PLAYER, encounter.player))
     write(describe_character(Side.ENEMY, encounter.enemy))
 
+    enemy_turns = 0
     while not encounter.finished:
         side = encounter.current_turn
-        write(f"-- {NAMES[side]}'s turn --")
-        action = Action.ATTACK  # the enemy always attacks
-        if side is Side.PLAYER:
+        warning = " (HEAVY ATTACK INCOMING)" if encounter.enemy.winding_up else ""
+        write(f"-- {NAMES[side]}'s turn --{warning if side is Side.PLAYER else ''}")
+        if side is Side.ENEMY:
+            enemy_turns += 1
+            action = enemy_action(enemy_turns, encounter, heavy)
+        else:
             action = _ask(read, write, "[a]ttack, [d]efend or [q]uit > ", TURN_CHOICES)
             if not isinstance(action, Action):
                 return None
@@ -116,13 +146,16 @@ def run(
     write: Write = print,
     make_player: Callable[[], Character] = default_player,
     make_enemy: Callable[[], Character] = default_enemy,
+    heavy: bool = False,
 ) -> list[str]:
     """Run encounters until the player quits. Returns each finished outcome."""
     outcomes: list[str] = []
     write("MUDDY-FATE combat prototype (provisional rules).")
+    if heavy:
+        write("EXPERIMENTAL: the enemy sometimes telegraphs a heavy attack.")
     while True:
         write(f"\n=== Encounter {len(outcomes) + 1} ===")
-        outcome = play_encounter(read, write, Encounter(make_player(), make_enemy()))
+        outcome = play_encounter(read, write, Encounter(make_player(), make_enemy()), heavy)
         if outcome is None:
             break
         outcomes.append(outcome)
@@ -133,9 +166,16 @@ def run(
     return outcomes
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="python -m game.sim")
+    parser.add_argument(
+        "--heavy",
+        action="store_true",
+        help="EXPERIMENTAL: enemy telegraphs a heavy attack every third turn",
+    )
+    args = parser.parse_args(argv)
     try:
-        run()
+        run(heavy=args.heavy)
     except KeyboardInterrupt:
         print("\nGoodbye.")
 

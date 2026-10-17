@@ -38,5 +38,11 @@ python -m game.sim
 ```
 On your turn, enter `a` to attack or `d` to defend. Defending blocks the next attack against you completely (0 damage), then the block is used up; it does not stack. The enemy attacks automatically on its turn. After each encounter, answer `y` to fight again or `n` to quit. Enter `q` at any prompt to quit. Combat rules and starting stats are PROVISIONAL prototype values, not approved balance.
 
+### EXPERIMENTAL: telegraphed heavy attack
+```bash
+python -m game.sim --heavy
+```
+With `--heavy`, the enemy follows a fixed, repeating script: attack, wind up, heavy attack. When it winds up, you get a warning (`!! Enemy is winding up a HEAVY ATTACK ...`) and one turn to respond. Its next attack deals normal damage +3. Defending blocks it completely; attacking lets it land. Without the flag, the game plays exactly as before. This is a reversible playtest experiment, not an approved rule; see `docs/PLAYTEST_NOTES.md`.
+
 ## Project workflow
 Read `AGENTS.md`, `docs/AGENT_PROTOCOL.md`, and `docs/WORKFLOW.md` before contributing. The human Game Director approves major design decisions. Work should be scoped, reviewed, and accepted before merging to `main`.
