@@ -33,6 +33,16 @@ Defend rule (PROVISIONAL, approved for this prototype only):
 - The block belongs to the defended character, not to a particular attacker,
   and stays until an attack consumes it or the encounter ends.
 
+Telegraphed heavy attack (EXPERIMENTAL playtest; may be removed):
+
+- ``Action.WIND_UP`` uses the actor's turn, deals no damage, and sets
+  ``Character.winding_up`` so the opponent is warned.
+- A winding-up character's next action must be ``ATTACK``; any other action
+  is rejected. That attack is heavy: ``calculate_heavy_damage(puissant)``,
+  which is the normal damage plus ``HEAVY_BONUS``. ``AttackResult.heavy`` is
+  ``True``, and the wind-up is used up, so one wind-up yields one heavy attack.
+- Defend blocks a heavy attack like any other attack.
+
 Error behavior:
 
 - Invalid construction values or ``calculate_damage`` arguments (wrong type,
@@ -63,6 +73,9 @@ from enum import Enum
 # PROVISIONAL: fixed for every attack; not a defense system.
 DEFENSE = 0
 
+# EXPERIMENTAL: flat extra damage for a telegraphed heavy attack. Not balanced.
+HEAVY_BONUS = 3
+
 
 class CombatError(Exception):
     """An action that is not valid in the current combat state."""
@@ -71,6 +84,7 @@ class CombatError(Exception):
 class Action(Enum):
     ATTACK = "attack"
     DEFEND = "defend"
+    WIND_UP = "wind_up"  # EXPERIMENTAL
 
 
 class Side(Enum):
@@ -110,6 +124,8 @@ class Character:
     health: int
     # PROVISIONAL: one-use block against the next incoming attack.
     defending: bool = False
+    # EXPERIMENTAL: announced a heavy attack that lands on its next action.
+    winding_up: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.traits, Traits):
@@ -117,6 +133,8 @@ class Character:
         _require_int("health", self.health, minimum=0)
         if not isinstance(self.defending, bool):
             raise TypeError("defending must be a bool")
+        if not isinstance(self.winding_up, bool):
+            raise TypeError("winding_up must be a bool")
 
     @property
     def defeated(self) -> bool:
@@ -132,11 +150,20 @@ class AttackResult:
     health_after: int  # target's
     defeated: bool  # whether the target is now defeated
     blocked: bool = False  # the target's defend absorbed this attack
+    heavy: bool = False  # EXPERIMENTAL: this was a telegraphed heavy attack
 
 
 @dataclass(frozen=True)
 class DefendResult:
     actor: Side
+
+
+@dataclass(frozen=True)
+class WindUpResult:
+    """EXPERIMENTAL: ``actor`` announced a heavy attack for ``damage``."""
+
+    actor: Side
+    damage: int  # what the heavy attack will deal if not blocked
 
 
 def calculate_damage(puissant: int) -> int:
@@ -146,6 +173,11 @@ def calculate_damage(puissant: int) -> int:
     """
     _require_int("puissant", puissant, minimum=0)
     return max(1, puissant - DEFENSE)
+
+
+def calculate_heavy_damage(puissant: int) -> int:
+    """EXPERIMENTAL heavy attack damage: normal damage plus ``HEAVY_BONUS``."""
+    return calculate_damage(puissant) + HEAVY_BONUS
 
 
 class Encounter:
@@ -175,7 +207,9 @@ class Encounter:
         """The side that acts next, or ``None`` once the encounter is finished."""
         return None if self.finished else self._turn
 
-    def perform(self, actor: Side, action: Action) -> AttackResult | DefendResult:
+    def perform(
+        self, actor: Side, action: Action
+    ) -> AttackResult | DefendResult | WindUpResult:
         if not isinstance(actor, Side):
             raise CombatError(f"unsupported side: {actor!r}")
         if not isinstance(action, Action):
@@ -184,13 +218,28 @@ class Encounter:
             raise CombatError("encounter is finished")
         if actor is not self._turn:
             raise CombatError(f"not {actor.value}'s turn; {self._turn.value} acts next")
+        if action is not Action.ATTACK and self._character(actor).winding_up:
+            raise CombatError(f"{actor.value} is winding up a heavy attack and must attack")
         if action is Action.DEFEND:
             result = self._defend(actor)
+        elif action is Action.WIND_UP:
+            result = self._wind_up(actor)
         else:
             result = self._attack(actor)
         if not self.finished:
             self._turn = Side.ENEMY if actor is Side.PLAYER else Side.PLAYER
         return result
+
+    def _character(self, side: Side) -> Character:
+        return self.player if side is Side.PLAYER else self.enemy
+
+    def _wind_up(self, actor: Side) -> WindUpResult:
+        if actor is Side.PLAYER:
+            self.player = replace(self.player, winding_up=True)
+        else:
+            self.enemy = replace(self.enemy, winding_up=True)
+        damage = calculate_heavy_damage(self._character(actor).traits.puissant)
+        return WindUpResult(actor=actor, damage=damage)
 
     def _defend(self, actor: Side) -> DefendResult:
         if actor is Side.PLAYER:
@@ -205,17 +254,20 @@ class Encounter:
         else:
             attacker, target = self.enemy, self.player
 
+        heavy = attacker.winding_up
+        damage_rule = calculate_heavy_damage if heavy else calculate_damage
         before = target.health
         blocked = target.defending
         if blocked:
             after = before
         else:
-            after = max(0, before - calculate_damage(attacker.traits.puissant))
+            after = max(0, before - damage_rule(attacker.traits.puissant))
         target = replace(target, health=after, defending=False)
+        attacker = replace(attacker, winding_up=False)
         if actor is Side.PLAYER:
-            self.enemy = target
+            self.player, self.enemy = attacker, target
         else:
-            self.player = target
+            self.enemy, self.player = attacker, target
         return AttackResult(
             attacker=actor,
             damage=before - after,
@@ -223,4 +275,5 @@ class Encounter:
             health_after=after,
             defeated=target.defeated,
             blocked=blocked,
+            heavy=heavy,
         )
